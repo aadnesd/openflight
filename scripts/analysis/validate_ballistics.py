@@ -46,7 +46,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import json
 import math
 import statistics
 import sys
@@ -66,7 +65,7 @@ from openflight.ballistics import (  # noqa: E402
     LaunchConditions,
     simulate,
 )
-from openflight.launch_monitor import SPIN_CONFIDENCE_HIGH, ClubType  # noqa: E402
+from openflight.launch_monitor import ClubType  # noqa: E402
 
 # TrackMan "Flat" normalization: no wind, 0 ft altitude, 77 °F.
 # ρ = P / (R_specific · T) with P = 101325 Pa, T = 298.15 K, R = 287.05 J/(kg·K)
@@ -147,6 +146,7 @@ class TMShot:
     launch_h_deg: Optional[float]
     spin_rpm: Optional[float]
     spin_axis_deg: Optional[float]
+    max_height_feet: Optional[float]
     carry_yards: Optional[float]
     timestamp: str
     session: str = ""  # session label (typically derived from the source filename)
@@ -197,6 +197,7 @@ def load_trackman(path: Path, session: Optional[str] = None) -> List[TMShot]:
                 launch_h_deg=_to_float(row.get("Launch Direction")),
                 spin_rpm=_to_float(row.get("Spin Rate")),
                 spin_axis_deg=_to_float(row.get("Spin Axis")),
+                max_height_feet=_to_float(row.get("Max Height - Height")),
                 carry_yards=_to_float(row.get("Carry Flat - Length")),
                 timestamp=row.get("Date", "") or "",
                 session=session_label,
@@ -283,6 +284,9 @@ class ValidationRow:
     measured_carry_yards: float
     model_carry_yards: float
     delta_yards: float  # model - measured
+    measured_apex_yards: Optional[float]
+    model_apex_yards: float
+    apex_delta_yards: Optional[float]
 
 
 def _has_required_inputs(*vals) -> bool:
@@ -311,6 +315,7 @@ def validate_tm_inputs(
             spin_source="measured",
         )
         traj = simulate(conditions, air_density=air_density)
+        measured_apex = s.max_height_feet / 3.0 if s.max_height_feet is not None else None
         session_tag = s.session or "default"
         out.append(ValidationRow(
             source="tm",
@@ -326,6 +331,11 @@ def validate_tm_inputs(
             measured_carry_yards=s.carry_yards,
             model_carry_yards=traj.carry_yards,
             delta_yards=traj.carry_yards - s.carry_yards,
+            measured_apex_yards=measured_apex,
+            model_apex_yards=traj.apex_yards,
+            apex_delta_yards=(
+                traj.apex_yards - measured_apex if measured_apex is not None else None
+            ),
         ))
     return out
 
@@ -397,6 +407,9 @@ def validate_of_inputs(
             measured_carry_yards=row.carry_tm,
             model_carry_yards=traj.carry_yards,
             delta_yards=traj.carry_yards - row.carry_tm,
+            measured_apex_yards=None,
+            model_apex_yards=traj.apex_yards,
+            apex_delta_yards=None,
         ))
     return out
 
@@ -415,6 +428,7 @@ def write_per_shot_csv(rows: List[ValidationRow], path: Path) -> None:
             "spin_rpm", "spin_axis_deg", "spin_source",
             "measured_carry_yards", "model_carry_yards",
             "delta_yards", "abs_delta_yards",
+            "measured_apex_yards", "model_apex_yards", "apex_delta_yards",
         ])
         for r in rows:
             w.writerow([
@@ -423,6 +437,9 @@ def write_per_shot_csv(rows: List[ValidationRow], path: Path) -> None:
                 f"{r.spin_rpm:.0f}", f"{r.spin_axis_deg:.2f}", r.spin_source,
                 f"{r.measured_carry_yards:.2f}", f"{r.model_carry_yards:.2f}",
                 f"{r.delta_yards:.2f}", f"{abs(r.delta_yards):.2f}",
+                (f"{r.measured_apex_yards:.2f}" if r.measured_apex_yards is not None else ""),
+                f"{r.model_apex_yards:.2f}",
+                (f"{r.apex_delta_yards:.2f}" if r.apex_delta_yards is not None else ""),
             ])
 
 
@@ -453,6 +470,14 @@ def format_stats(label: str, rows: List[ValidationRow]) -> str:
         f"rmse={overall['rmse']:5.2f} yd  mae={overall['mae']:5.2f} yd  "
         f"max|d|={overall['max_abs']:5.2f} yd"
     )
+    apex_deltas = [r.apex_delta_yards for r in rows if r.apex_delta_yards is not None]
+    if apex_deltas:
+        apex = _stats(apex_deltas)
+        lines.append(
+            f"APEX     n={apex['n']:3d}  bias={apex['mean']:+6.2f} yd  "
+            f"rmse={apex['rmse']:5.2f} yd  mae={apex['mae']:5.2f} yd  "
+            f"max|d|={apex['max_abs']:5.2f} yd"
+        )
 
     # Per-club table
     clubs = sorted({r.club for r in rows})

@@ -11,11 +11,10 @@ Coordinate system (world frame):
     y — lateral, +right
     z — height, up
 
-Aerodynamic model: Cd and Cl are functions of the spin parameter
-Sp = r*omega / v. Fits are consistent with Bearman & Harvey (1976) and
-Kensrud & Smith (2018) measurements for dimpled golf balls in the
-post-drag-crisis regime (Re ~ 5e4 to 2e5). Spin decay follows
-Kiratidis & Leinweber (2018) at ~4%/s.
+Aerodynamic model: Cd and Cl are quadratic functions of the spin parameter
+Sp = r*omega / v, using the physics-model coefficients published by Ferguson,
+McNally & McPhee (2022). Spin decay follows Kiratidis & Leinweber (2018) at
+~4%/s.
 """
 
 import math
@@ -36,31 +35,18 @@ BALL_RADIUS_M = 0.02135
 BALL_AREA_M2 = math.pi * BALL_RADIUS_M ** 2
 AIR_DENSITY_STD = 1.225  # kg/m³ at sea level, 15 °C ISA
 
-# Cd = CD_BASE + CD_SPIN_COEFF * Sp
-#   Linear rise with spin parameter Sp = r·ω/v.
-# Cl = CL_SATURATION * Sp / (CL_HALF_SP + Sp)
-#   Hill-type saturating form: Cl → CL_SATURATION as Sp → ∞,
-#   reaches CL_SATURATION/2 at Sp = CL_HALF_SP.
-# These are simple parametric forms consistent with Bearman & Harvey (1976)
-# and Kensrud & Smith (2018) for dimpled balls past the drag crisis
-# (Re ~ 5e4–2e5), which covers the full range of realistic golf shots.
-#
-# Fitted with scripts/analysis/sweep_ballistic_coeffs.py against the committed
-# TrackMan capture (session_logs/OpenFlight-Test.Normalized.csv, 24 shots,
-# differential evolution + Nelder-Mead, rho=1.184 to match TrackMan "Flat").
-# Overall carry RMSE against TrackMan: 24.52 -> 3.97 yd. The previous
-# CL_HALF_SP of 0.15 sat well above the low-spin driver regime (driver
-# Sp ~ 0.05-0.08), so for drivers the lift curve never left its low-lift
-# regime and driver carry ran ~37 yd short. Irons and wedges (Sp ~ 0.21-0.63)
-# were already past CL_HALF_SP and ran long instead, which is why the error
-# flipped sign by club. Resulting Cl is ~0.13-0.16 for drivers, rising to
-# ~0.22-0.23 for irons and wedges; the iron/wedge values sit inside the
-# 0.18-0.25 band the cited sources report, while the driver values remain
-# below it.
-CD_BASE = 0.19071
-CD_SPIN_COEFF = 0.31588
-CL_SATURATION = 0.25544
-CL_HALF_SP = 0.04758
+# Cd = CD_INTERCEPT + CD_LINEAR*Sp + CD_QUADRATIC*Sp²
+# Cl = CL_INTERCEPT + CL_LINEAR*Sp + CL_QUADRATIC*Sp²
+# Ferguson, McNally & McPhee (2022), DOI 10.5703/1288284317493.
+# Published fit domain: approximately 0.02 <= Sp <= 0.75. The simulator does
+# not clamp to that interval because doing so would erase the measured
+# post-peak decline; trajectory regressions cover the late-flight extrapolation.
+CD_INTERCEPT = 0.1304
+CD_LINEAR = 0.9287
+CD_QUADRATIC = -0.8259
+CL_INTERCEPT = 0.0504
+CL_LINEAR = 1.2031
+CL_QUADRATIC = -1.1490
 
 # Exponential spin decay: ω(t) = ω₀·exp(-rate·t).
 # ~4%/s per Kiratidis & Leinweber (2018); small but matters over ~6 s flights.
@@ -185,11 +171,13 @@ def resolve_launch(shot: Shot) -> Optional[LaunchConditions]:
 
 
 def _cd(sp: float) -> float:
-    return CD_BASE + CD_SPIN_COEFF * sp
+    return max(0.0, CD_INTERCEPT + CD_LINEAR * sp + CD_QUADRATIC * sp * sp)
 
 
 def _cl(sp: float) -> float:
-    return CL_SATURATION * sp / (CL_HALF_SP + sp) if sp > 0 else 0.0
+    if sp <= 0:
+        return 0.0
+    return max(0.0, CL_INTERCEPT + CL_LINEAR * sp + CL_QUADRATIC * sp * sp)
 
 
 def _derivatives(

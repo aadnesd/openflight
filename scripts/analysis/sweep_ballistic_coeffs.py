@@ -1,11 +1,9 @@
-"""Tune the four aerodynamic coefficients in
+"""Tune the six quadratic aerodynamic coefficients in
 :mod:`openflight.ballistics` against TrackMan-measured carry.
 
 Parameters swept:
-    CD_BASE          — drag coefficient at zero spin
-    CD_SPIN_COEFF    — slope of Cd(Sp) (linear in spin parameter)
-    CL_SATURATION    — Cl asymptote at high Sp
-    CL_HALF_SP       — Sp at which Cl reaches CL_SATURATION/2
+    CD_INTERCEPT, CD_LINEAR, CD_QUADRATIC — Cd(Sp) polynomial
+    CL_INTERCEPT, CL_LINEAR, CL_QUADRATIC — Cl(Sp) polynomial
 
 Method: scipy.optimize.differential_evolution (global) followed by
 Nelder-Mead refinement. Loss is overall RMSE on the TrackMan-inputs
@@ -59,9 +57,6 @@ if str(_REPO_ROOT / "src") not in sys.path:
 if str(_REPO_ROOT / "scripts" / "analysis") not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT / "scripts" / "analysis"))
 
-import openflight.ballistics as bl  # noqa: E402
-from openflight.ballistics import LaunchConditions, simulate  # noqa: E402
-
 # Reuse the TM CSV loader from the validation script so the data path is
 # identical between the two tools.
 from validate_ballistics import (  # noqa: E402
@@ -72,28 +67,41 @@ from validate_ballistics import (  # noqa: E402
     load_trackman,
 )
 
+import openflight.ballistics as bl  # noqa: E402
+from openflight.ballistics import LaunchConditions, simulate  # noqa: E402
 
 # Bounds for the search. Wide enough to span published Cd/Cl ranges for
 # dimpled golf balls in the post-drag-crisis regime; narrow enough that
 # differential evolution converges in a few minutes.
 PARAM_BOUNDS: List[Tuple[float, float]] = [
-    (0.16, 0.28),   # CD_BASE
-    (0.00, 0.40),   # CD_SPIN_COEFF
-    (0.18, 0.42),   # CL_SATURATION
-    (0.03, 0.35),   # CL_HALF_SP
+    (0.08, 0.25),
+    (0.30, 1.50),
+    (-1.50, -0.10),
+    (0.00, 0.15),
+    (0.30, 2.00),
+    (-2.00, -0.10),
 ]
-PARAM_NAMES = ["CD_BASE", "CD_SPIN_COEFF", "CL_SATURATION", "CL_HALF_SP"]
+PARAM_NAMES = [
+    "CD_INTERCEPT",
+    "CD_LINEAR",
+    "CD_QUADRATIC",
+    "CL_INTERCEPT",
+    "CL_LINEAR",
+    "CL_QUADRATIC",
+]
 DEFAULT_COEFFS = (
-    bl.CD_BASE,
-    bl.CD_SPIN_COEFF,
-    bl.CL_SATURATION,
-    bl.CL_HALF_SP,
+    bl.CD_INTERCEPT,
+    bl.CD_LINEAR,
+    bl.CD_QUADRATIC,
+    bl.CL_INTERCEPT,
+    bl.CL_LINEAR,
+    bl.CL_QUADRATIC,
 )
 
 
 @dataclass
 class FitResult:
-    coeffs: Tuple[float, float, float, float]
+    coeffs: Tuple[float, ...]
     rmse: float
     preds: List[float]
 
@@ -123,7 +131,7 @@ def _filter_shots(shots: List[TMShot]) -> List[TMShot]:
 
 def simulate_with_coeffs(
     shots: List[TMShot],
-    coeffs: Tuple[float, float, float, float],
+    coeffs: Tuple[float, ...],
 ) -> List[float]:
     """Monkey-patch the ballistics module constants, run simulate() for
     every shot, restore the originals on exit.
@@ -131,8 +139,9 @@ def simulate_with_coeffs(
     Relies on ``ballistics._cd`` and ``ballistics._cl`` resolving the
     constants at call time from the module's global namespace.
     """
-    saved = (bl.CD_BASE, bl.CD_SPIN_COEFF, bl.CL_SATURATION, bl.CL_HALF_SP)
-    bl.CD_BASE, bl.CD_SPIN_COEFF, bl.CL_SATURATION, bl.CL_HALF_SP = coeffs
+    saved = tuple(getattr(bl, name) for name in PARAM_NAMES)
+    for name, value in zip(PARAM_NAMES, coeffs):
+        setattr(bl, name, value)
     try:
         results = []
         for s in shots:
@@ -140,11 +149,12 @@ def simulate_with_coeffs(
             results.append(traj.carry_yards)
         return results
     finally:
-        bl.CD_BASE, bl.CD_SPIN_COEFF, bl.CL_SATURATION, bl.CL_HALF_SP = saved
+        for name, value in zip(PARAM_NAMES, saved):
+            setattr(bl, name, value)
 
 
 def make_loss(shots: List[TMShot], measured: np.ndarray):
-    """Closure that the optimizer can call with a 4-vector."""
+    """Closure that the optimizer can call with a six-coefficient vector."""
     def _loss(x: np.ndarray) -> float:
         preds = simulate_with_coeffs(shots, tuple(x))
         return float(np.sqrt(np.mean((np.asarray(preds) - measured) ** 2)))
@@ -154,7 +164,7 @@ def make_loss(shots: List[TMShot], measured: np.ndarray):
 def evaluate(
     shots: List[TMShot],
     measured: np.ndarray,
-    coeffs: Tuple[float, float, float, float],
+    coeffs: Tuple[float, ...],
 ) -> FitResult:
     preds = simulate_with_coeffs(shots, coeffs)
     rmse = float(np.sqrt(np.mean((np.asarray(preds) - measured) ** 2)))
@@ -258,7 +268,7 @@ def write_scatter(
     preds_default: List[float],
     preds_fit: List[float],
     out_path: Path,
-    fit_coeffs: Tuple[float, float, float, float],
+    fit_coeffs: Tuple[float, ...],
 ) -> None:
     import matplotlib
 
@@ -317,13 +327,10 @@ def write_scatter(
         ax.grid(True, alpha=0.3)
         ax.legend(loc="best", fontsize=8)
 
-    fig.suptitle(
-        f"Default vs fit (fit: CD_BASE={fit_coeffs[0]:.4f}, "
-        f"CD_SPIN_COEFF={fit_coeffs[1]:.4f}, "
-        f"CL_SATURATION={fit_coeffs[2]:.4f}, "
-        f"CL_HALF_SP={fit_coeffs[3]:.4f})",
-        fontsize=11,
+    fit_summary = ", ".join(
+        f"{name}={value:.4f}" for name, value in zip(PARAM_NAMES, fit_coeffs)
     )
+    fig.suptitle(f"Default vs fit ({fit_summary})", fontsize=9)
     fig.tight_layout()
     fig.savefig(out_path, dpi=140)
     plt.close(fig)
@@ -462,12 +469,12 @@ def main(argv=None) -> int:
         shots, list(measured), fit.preds,
     )
 
-    fit_lines = [
-        "Optimal coefficients (TM-inputs, RMSE objective):",
-        f"  CD_BASE        = {best_x[0]:.5f}   (default {DEFAULT_COEFFS[0]:.5f})",
-        f"  CD_SPIN_COEFF  = {best_x[1]:.5f}   (default {DEFAULT_COEFFS[1]:.5f})",
-        f"  CL_SATURATION  = {best_x[2]:.5f}   (default {DEFAULT_COEFFS[2]:.5f})",
-        f"  CL_HALF_SP     = {best_x[3]:.5f}   (default {DEFAULT_COEFFS[3]:.5f})",
+    fit_lines = ["Optimal coefficients (TM-inputs, RMSE objective):"]
+    fit_lines.extend(
+        f"  {name:14s} = {value:.5f}   (default {default:.5f})"
+        for name, value, default in zip(PARAM_NAMES, best_x, DEFAULT_COEFFS)
+    )
+    fit_lines.extend([
         "",
         f"Baseline RMSE: {baseline.rmse:.3f} yd",
         f"Fit RMSE:      {fit.rmse:.3f} yd",
@@ -477,7 +484,7 @@ def main(argv=None) -> int:
         table_default,
         "",
         table_fit,
-    ]
+    ])
 
     # --- Leave-one-session-out cross-validation ---
     # Only emit when --loso is requested AND there are multiple sessions.

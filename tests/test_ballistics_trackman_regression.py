@@ -36,24 +36,25 @@ from validate_ballistics import (  # noqa: E402  (path set up above)
 
 TRACKMAN_CSV = _REPO_ROOT / "session_logs" / "OpenFlight-Test.Normalized.csv"
 
-# Per-club RMSE ceilings in yards. Ratcheted down after the aero coefficients
-# were re-fit against this same capture (see ballistics.py CD_/CL_ constants).
+# Per-club RMSE ceilings in yards. Ratcheted down for the published Ferguson
+# quadratic coefficients (see ballistics.py CD_/CL_ constants).
 #
-#                    before re-fit        after re-fit
+#                    previous model       Ferguson
 #   club            rmse      bias       rmse     bias
-#   7-iron         11.64   +11.00        2.96   +1.52
-#   driver         38.60   -37.18        1.75   -0.45
-#   pitching wedge 13.56   +11.02        6.26   -2.96
-#   OVERALL        24.52    -5.05        3.97   -0.45
+#   7-iron          2.96     +1.52        1.33   +1.30
+#   driver          1.75     -0.45        2.38   -1.33
+#   pitching wedge  6.26     -2.96        4.56   +1.50
+#   OVERALL         3.97     -0.45        2.93   +0.48
 #
 # Ceilings sit slightly above the measured values to absorb float/platform
 # drift. Lower them again if the model improves; never raise them.
 RMSE_BUDGET_YARDS = {
     "driver": 3.0,
-    "7-iron": 4.0,
-    "pitching wedge": 7.5,
+    "7-iron": 2.0,
+    "pitching wedge": 5.5,
 }
-OVERALL_RMSE_BUDGET_YARDS = 5.0
+OVERALL_RMSE_BUDGET_YARDS = 3.5
+APEX_RMSE_BUDGET_YARDS = 1.25
 
 # The reference capture is a fixed, committed file: if the shot count changes,
 # the fixture changed and every budget above needs re-deriving.
@@ -87,6 +88,22 @@ def test_overall_carry_rmse_within_budget(validation_rows):
         f"{OVERALL_RMSE_BUDGET_YARDS} yd (bias {stats['mean']:+.2f}, "
         f"max |delta| {stats['max_abs']:.2f}, n={stats['n']}). "
         f"The ballistic model got less accurate against the reference capture."
+    )
+
+
+def test_overall_apex_rmse_within_budget(validation_rows):
+    """Model apex vs TrackMan apex for rows with measured maximum height."""
+    deltas = [
+        r.apex_delta_yards
+        for r in validation_rows
+        if r.apex_delta_yards is not None
+    ]
+    assert len(deltas) == EXPECTED_SHOT_COUNT
+    stats = _stats(deltas)
+    assert stats["rmse"] <= APEX_RMSE_BUDGET_YARDS, (
+        f"Overall apex RMSE {stats['rmse']:.2f} yd exceeds budget "
+        f"{APEX_RMSE_BUDGET_YARDS} yd (bias {stats['mean']:+.2f}, "
+        f"max |delta| {stats['max_abs']:.2f}, n={stats['n']})."
     )
 
 

@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Ball-flight lift and drag use the published Ferguson quadratic model.**
+  TrackMan fixture carry RMSE falls from 3.97 to 2.93 yards and apex RMSE from
+  5.02 to 0.87 yards, with direct coefficient and trajectory regression tests.
 - **On-screen keyboard for profile names.** Adding or renaming a profile on the
   Pi kiosk now shows a full-screen keyboard. Chromium in `--kiosk` mode does not
   surface a system keyboard, so the native text field was unusable on the

@@ -5,6 +5,7 @@ from datetime import datetime
 
 import pytest
 
+from openflight import ballistics
 from openflight.ballistics import (
     CLUB_TYPICAL_SPIN_RPM,
     SPIN_DECAY_RATE,
@@ -24,6 +25,26 @@ def _shot(**kwargs) -> Shot:
     )
     defaults.update(kwargs)
     return Shot(**defaults)
+
+
+class TestAerodynamicCoefficients:
+    def test_published_ferguson_values(self):
+        assert ballistics._cd(0.25) == pytest.approx(0.31095625)
+        assert ballistics._cl(0.25) == pytest.approx(0.2793625)
+
+    def test_lift_is_zero_without_backspin(self):
+        assert ballistics._cl(0.0) == 0.0
+        assert ballistics._cl(-0.1) == 0.0
+
+    def test_lift_peaks_then_declines(self):
+        peak_sp = -ballistics.CL_LINEAR / (2 * ballistics.CL_QUADRATIC)
+        assert peak_sp == pytest.approx(0.52354, rel=1e-4)
+        assert ballistics._cl(peak_sp) > ballistics._cl(0.25)
+        assert ballistics._cl(peak_sp) > ballistics._cl(0.75)
+
+    @pytest.mark.parametrize("coefficient", [ballistics._cd, ballistics._cl])
+    def test_pathological_spin_ratio_cannot_produce_negative_force(self, coefficient):
+        assert coefficient(10.0) == 0.0
 
 
 class TestResolveLaunch:
